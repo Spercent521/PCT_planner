@@ -5,6 +5,9 @@ from kernels import *
 
 
 class Tomogram(object):
+    '''
+    整个点云地形处理系统的GPU加速核心模块 主要负责点云到地形图的转换
+    '''
     def __init__(self, cfg):
         self.resolution = cfg.map.resolution
         self.slice_dh = cfg.map.slice_dh
@@ -20,6 +23,9 @@ class Tomogram(object):
         self.half_inf_k_size = int((self.safe_margin + self.inflation) / self.resolution)
 
     def initKernel(self):
+        '''
+        初始化CUDA核函数 各核函数的尺寸参数
+        '''
         self.tomography_kernel = tomographyKernel(
             self.resolution, 
             self.map_dim_x, 
@@ -63,6 +69,9 @@ class Tomogram(object):
                 )
 
     def initBuffers(self):
+        '''
+        分配GPU内存	网格层数/尺寸
+        '''
         self.layers_g = cp.zeros((self.n_slice_init, self.map_dim_x, self.map_dim_y), dtype=cp.float32)
         self.layers_c = cp.zeros((self.n_slice_init, self.map_dim_x, self.map_dim_y), dtype=cp.float32)
         self.grad_mag_sq = cp.zeros((self.n_slice_init, self.map_dim_x, self.map_dim_y), dtype=cp.float32)
@@ -71,6 +80,9 @@ class Tomogram(object):
         self.inflated_cost = cp.zeros((self.n_slice_init, self.map_dim_x, self.map_dim_y), dtype=cp.float32)
 
     def initMappingEnv(self, center, map_dim_x, map_dim_y, n_slice_init, slice_h0):
+        '''
+        设置地图环境 中心点/网格数/切片数
+        '''
         self.center = cp.array(center, dtype=cp.float32)
         self.map_dim_x = int(map_dim_x)
         self.map_dim_y = int(map_dim_y)
@@ -81,6 +93,9 @@ class Tomogram(object):
         self.initKernel()
 
     def clearMap(self):
+        '''
+        重置GPU缓冲区
+        '''
         self.layers_g *= 0.
         self.layers_c *= 0.
         self.layers_g += -1e6
@@ -92,11 +107,13 @@ class Tomogram(object):
         self.inflated_cost *= 0.
 
     def point2map(self, points):
-        points = cp.asarray(points)
-        points = points[~cp.isnan(points).any(axis=1)]
+        points = cp.asarray(points)                         # 使用 CuPy 实现 CPU-GPU 零拷贝传输 
+                                                            # 允许GPU直接访问CPU的物理内存 从而避免了将数据从主机内存拷贝到GPU内存的需要
+                                                            # 不同于 共享内存 Shared Memory
+        points = points[~cp.isnan(points).any(axis=1)]      # 剔除NaN点
         self.clearMap()
 
-        # Tomogram
+        # A. Tomogram Construction
         start_gpu = cp.cuda.Event()
         end_gpu = cp.cuda.Event()
         start_gpu.record()
@@ -124,7 +141,7 @@ class Tomogram(object):
         end_gpu.synchronize()
         gpu_t_map = cp.cuda.get_elapsed_time(start_gpu, end_gpu)
 
-        # Traversability
+        # B. Traversability Estimation
         start_gpu = cp.cuda.Event()
         end_gpu = cp.cuda.Event()
         start_gpu.record()
@@ -145,7 +162,7 @@ class Tomogram(object):
         end_gpu.synchronize()
         gpu_t_trav = cp.cuda.get_elapsed_time(start_gpu, end_gpu)
 
-        # Layer Simplification
+        # C. Tomogram Simplification
         start_gpu = cp.cuda.Event()
         end_gpu = cp.cuda.Event()
         start_gpu.record()
@@ -173,8 +190,9 @@ class Tomogram(object):
         end_gpu.synchronize()
         gpu_t_simp = cp.cuda.get_elapsed_time(start_gpu, end_gpu)
         
+        # RETURN
         gpu_t_all = gpu_t_map + gpu_t_trav + gpu_t_simp
-        #print("CuPy GPU time (ms):", gpu_t_all)
+        # print("CuPy GPU time (ms):", gpu_t_all)
 
         layers_t = self.inflated_cost[idx_simp].get()
         layers_g = cp.where(

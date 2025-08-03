@@ -22,20 +22,23 @@ rsg_root = os.path.dirname(os.path.abspath(__file__)) + '/../..'
 
 class Tomography(object):
     def __init__(self, cfg, scene_cfg):
-        self.export_dir = rsg_root + cfg.map.export_dir
-        self.pcd_file = scene_cfg.pcd.file_name
-        self.resolution = scene_cfg.map.resolution
-        self.ground_h = scene_cfg.map.ground_h
-        self.slice_dh = scene_cfg.map.slice_dh
+        self.export_dir = rsg_root + cfg.map.export_dir # 导出目录完整路径
+        self.pcd_file = scene_cfg.pcd.file_name         # 点云文件名（如"Spiral.pcd"）
+        self.resolution = scene_cfg.map.resolution      # 地图网格分辨率（单位：米/格）
+        self.ground_h = scene_cfg.map.ground_h          # 地面基准高度
+        self.slice_dh = scene_cfg.map.slice_dh          # 切片高度间隔
 
-        self.center = np.zeros(2, dtype=np.float32)
-        self.tomogram = Tomogram(scene_cfg)
+        self.center = np.zeros(2, dtype=np.float32)     # 地图中心坐标（初始化为[0,0]）
+        self.tomogram = Tomogram(scene_cfg)             # 创建Tomogram处理实例
         points = self.loadPCD(self.pcd_file)
 
         # Process
         self.process(points)
 
     def initROS(self):
+        '''
+        被 process 调用
+        '''
         self.map_frame = cfg.ros.map_frame
 
         pointcloud_topic = cfg.ros.pointcloud_topic
@@ -55,9 +58,12 @@ class Tomography(object):
         self.tomogram_pub = rospy.Publisher(tomogram_topic, PointCloud2, latch=True, queue_size=1)
 
     def loadPCD(self, pcd_file):
-        pcd = o3d.io.read_point_cloud(rsg_root + "/rsc/pcd/" + pcd_file)
-        points = np.asarray(pcd.points).astype(np.float32)
-        rospy.loginfo("PCD points: %d", points.shape[0])
+        '''
+        假设点云至少包含XYZ坐标 3列 如果点云包含其他属性 如颜色、强度 ，后续会截断
+        '''
+        pcd = o3d.io.read_point_cloud(rsg_root + "/rsc/pcd/" + pcd_file) # 使用Open3D读取PCD文件 路径拼接为rsg_root/rsc/pcd/{pcd_file}）
+        points = np.asarray(pcd.points).astype(np.float32)               # 点云转换为 NumPy数组 并强制转换为 float32 优化内存和计算效率
+        rospy.loginfo("PCD points: %d", points.shape[0])                 # 通过ROS日志输出点云数量 调试用
 
         if points.shape[1] > 3:
             points = points[:, :3]
@@ -96,6 +102,7 @@ class Tomography(object):
         """
         for i in range(n_repeat + 1):
             t_start = time.time()
+            # point2map
             layers_t, trav_grad_x, trav_grad_y, layers_g, layers_c, t_gpu = self.tomogram.point2map(points)
 
             if i > 0:
@@ -111,6 +118,7 @@ class Tomography(object):
         rospy.loginfo(" -- avg t_simp (ms): %f", t_simp / n_repeat)
         rospy.loginfo(" -- avg t_all  (ms): %f", t_all / n_repeat)
 
+        # 数据导出与发布
         self.n_slice = layers_g.shape[0]
 
         map_file = os.path.splitext(self.pcd_file)[0]
@@ -199,17 +207,43 @@ class Tomography(object):
 
 
 if __name__ == '__main__':
+    '''
+    用 argparse 模块解析参数 --scene " Spiral , Building , Plaza "
+    '''
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--scene', type=str, help='Name of the scene. Available: [\'Spiral\', \'Building\', \'Plaza\']')
     args = parser.parse_args()
 
+    '''
+    加载全局默认配置 如 ROS话题名、导出路径
+    '''
     cfg = Config()
+
+    '''
+    根据 --scene 参数动态导入对应的 类 处理数据 
+    '''
     scene_cfg = getattr(__import__('config'), 'Scene' + args.scene)
 
+    '''
+    ROS 节点初始化 
+    节点名称 : pointcloud_tomography
+    anonymous=True : 自动追加随机后缀 避免多实例冲突
+    '''
     rospy.init_node('pointcloud_tomography', anonymous=True)
 
+    '''
+    启动处理模块 转到 Tomography.__init__()
+    '''
     mapping = Tomography(cfg, scene_cfg)
 
+    '''
+    阻止Python程序退出 保持节点运行
+    - 维持ROS话题发布
+    - 响应可能的服务调用
+    - 监听退出信号
+
+    若需周期性执行 , 可用 `rospy.Timer` 替代
+    '''
     rospy.spin()
