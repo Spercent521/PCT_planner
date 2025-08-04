@@ -450,7 +450,7 @@ def inflationKernel(n_row, n_col, half_kernel_size):
 >   -   **`& mask_u_g`**：当前层比下一层 **更高**（防止连续下降的层被保留）。
 >   -   **`& mask_t`**：当前层成本 **低于障碍阈值**（确保不是障碍物）。
 
-# Plan
+# D. Path Planning through Slices
 
 ```bash
 cd planner/scripts/
